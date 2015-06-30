@@ -1,0 +1,120 @@
+#!/bin/bash
+
+CFGFILE=/etc/prz-pincpus.conf
+
+if [ ! -f $CFGFILE ]; then
+  echo "ERROR: Missing configuration file ($CFGFILE)";
+  exit;
+  fi
+
+. $CFGFILE
+
+if [ $(cat /sys/kernel/mm/ksm/run) -eq 1 ] && \
+   [ $(cat /sys/kernel/mm/ksm/merge_across_nodes) -eq 1 ]; then
+  echo "ERROR: KSM w/ merge_across_nodes enabled! Exiting...";
+  exit;
+  fi
+
+osds="$((`pgrep ceph-osd|wc -l`))";
+max_osds_per_cgroup=$((($osds-1)/$cgroup_osd_count+1))
+
+cgroup_id=0;
+while [ $cgroup_id -lt $cgroup_osd_count ]; do
+
+  echo "- creating or updating cgroup #$cgroup_id";
+  mkdir /cgroup/cpuset/osd-group-$cgroup_id 2>/dev/null
+  cd /cgroup/cpuset/osd-group-$cgroup_id
+  echo ${cgroup_osd_cpu[$cgroup_id]} > cpuset.cpus
+  echo ${cgroup_osd_numanode[$cgroup_id]} > cpuset.mems
+  echo 1 > cpuset.memory_migrate
+  echo 1 > cpuset.mem_hardwall
+  echo 2 > cpuset.sched_relax_domain_level
+
+  count_osds[$cgroup_id]=0; # initialize for next step
+
+  cgroup_id=$((cgroup_id+1));
+  done
+
+migrate_pids=();
+
+echo "- number of osds: $osds"
+echo "- maximum osds per cgroup: $max_osds_per_cgroup";
+
+if [ $osds -gt 0 ]; then
+  echo "- counting # of OSD in cgroups"
+  for pid in $(pidof ceph-osd); do
+
+    # get cpuset for this OSD
+    cpuset="`cat /proc/$pid/cpuset`";
+
+    # get group# from cpuset (9999 = no cgroup assigned)
+    echo $cpuset | grep '^/osd-group-' >/dev/null && group="`echo $cpuset|cut -f3-3 -d\-`" || group="9999";
+
+    count_osds[$group]=$((${count_osds[$group]}+1));
+
+    # we want to migrate any OSD with matches any of these conditions:
+    #
+    # a) current cgroup is overutilized
+    # b) ceph-osd is not assigned to any cgroup
+
+    if [ ${count_osds[$group]} -gt $max_osds_per_cgroup ] || [ $group -eq 9999 ]; then
+      echo "- pid $pid scheduled for migration (currently in group '$group')";
+      migrate_pids+=($pid);
+      fi
+    
+    done  
+
+  echo "- going to migrate them (if needed)";
+
+  for pid in ${migrate_pids[*]}; do
+
+     # find the least utilized cgroup
+     cgroup_id=0;
+     lu_count=99999;
+     while [ $cgroup_id -lt $cgroup_osd_count ]; do
+       if [ ${count_osds[$cgroup_id]} -lt $lu_count ]; then
+        lu_count=${count_osds[$cgroup_id]}; lu_cgroup_id=$cgroup_id;
+        fi
+       cgroup_id=$(($cgroup_id+1))
+       done;
+
+      # migrate to the least utilized group
+      echo " - migrating $pid to the least utilized cgroup #$lu_cgroup_id (qty $lu_count)";
+      echo $pid > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
+      for pid_task in `ls -1 /proc/$pid/task`; do 
+       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
+       done;
+      # need to do this twice (some task may have created another thread during the execution)
+      for pid_task in `ls -1 /proc/$pid/task`; do 
+       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
+       done;
+
+      # increase group utilization count
+      count_osds[$lu_cgroup_id]=$((${count_osds[$lu_cgroup_id]}+1));
+
+     done
+
+  else
+   echo "No Ceph OSD processes running....";
+  fi
+
+echo "- finished OSDs"
+
+cat /cgroup/cpuset/libvirt/cpuset.cpus | grep "^${cgroup_libvirt_cpus}$" >/dev/null \
+  && echo "- libvirt cpuset is ok" \
+  || (
+    echo "- going to set libvirt cpuset...";
+    IFS='
+'
+
+    # need to set cpuset
+    # start with childs & finish with root
+    # using 'find' (starts with root and recurses) & 'tac' (reverse the order :)
+
+    find /cgroup/cpuset/libvirt -type d|tac| \
+     while read dir; do 
+       echo ${cgroup_libvirt_cpus} > $dir/cpuset.cpus
+       done;
+    echo '- done';
+
+  )
