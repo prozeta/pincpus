@@ -1,6 +1,15 @@
 #!/bin/bash
 
 CFGFILE=/etc/prz-pincpus.conf
+LOCKFILE=/var/run/prz-pincpus.pid
+
+if [ -f $LOCKFILE ]; then
+  echo "- lockfile exists"
+  ps -p $(cat $LOCKFILE) | grep pincpus >/dev/null && exit || rm $LOCKFILE
+  echo "- but no running process - continuing...";
+  fi
+
+echo $$ > $LOCKFILE
 
 if [ ! -f $CFGFILE ]; then
   echo "ERROR: Missing configuration file ($CFGFILE)";
@@ -118,3 +127,6 @@ cat /cgroup/cpuset/libvirt/cpuset.cpus | grep "^${cgroup_libvirt_cpus}$" >/dev/n
     echo '- done';
 
   )
+
+rm $LOCKFILE
+
