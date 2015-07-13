@@ -1,15 +1,6 @@
 #!/bin/bash
 
 CFGFILE=/etc/prz-pincpus.conf
-LOCKFILE=/var/run/prz-pincpus.pid
-
-if [ -f $LOCKFILE ]; then
-  echo "- lockfile exists"
-  ps -p $(cat $LOCKFILE) | grep pincpus >/dev/null && exit || rm $LOCKFILE
-  echo "- but no running process - continuing...";
-  fi
-
-echo $$ > $LOCKFILE
 
 if [ ! -f $CFGFILE ]; then
   echo "ERROR: Missing configuration file ($CFGFILE)";
@@ -57,7 +48,9 @@ if [ $osds -gt 0 ]; then
     cpuset="`cat /proc/$pid/cpuset`";
 
     # get group# from cpuset (9999 = no cgroup assigned)
+    
     echo $cpuset | grep '^/osd-group-' >/dev/null && group="`echo $cpuset|cut -f3-3 -d\-`" || group="9999";
+
 
     count_osds[$group]=$((${count_osds[$group]}+1));
 
@@ -89,14 +82,16 @@ if [ $osds -gt 0 ]; then
 
       # migrate to the least utilized group
       echo " - migrating $pid to the least utilized cgroup #$lu_cgroup_id (qty $lu_count)";
-      echo $pid > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
-      for pid_task in `ls -1 /proc/$pid/task`; do 
-       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
-       done;
+      echo $pid > /cgroup/cpuset/osd-group-$lu_cgroup_id/cgroup.procs
+      
+      # zviratko - unneeded 
+#      for pid_task in `ls -1 /proc/$pid/task`; do 
+#       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
+#       done;
       # need to do this twice (some task may have created another thread during the execution)
-      for pid_task in `ls -1 /proc/$pid/task`; do 
-       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
-       done;
+#      for pid_task in `ls -1 /proc/$pid/task`; do 
+#       echo $pid_task > /cgroup/cpuset/osd-group-$lu_cgroup_id/tasks 
+#       done;
 
       # increase group utilization count
       count_osds[$lu_cgroup_id]=$((${count_osds[$lu_cgroup_id]}+1));
@@ -127,6 +122,3 @@ cat /cgroup/cpuset/libvirt/cpuset.cpus | grep "^${cgroup_libvirt_cpus}$" >/dev/n
     echo '- done';
 
   )
-
-rm $LOCKFILE
-
