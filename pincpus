@@ -22,7 +22,7 @@ cgroup_id=0;
 while [ $cgroup_id -lt $cgroup_osd_count ]; do
 
   echo "- creating or updating cgroup #$cgroup_id";
-  mkdir /cgroup/cpuset/osd-group-$cgroup_id 2>/dev/null
+  mkdir -p /cgroup/cpuset/osd-group-$cgroup_id 2>/dev/null
   cd /cgroup/cpuset/osd-group-$cgroup_id
   echo ${cgroup_osd_cpu[$cgroup_id]} > cpuset.cpus
   echo ${cgroup_osd_numanode[$cgroup_id]} > cpuset.mems
